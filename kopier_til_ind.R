@@ -1,0 +1,12 @@
+
+library(tidyverse)
+library(stringr)
+library(fs)
+library(tictoc)
+library(future)
+library(tidylog)
+library(lubridate)
+# load("V:/BYH/Datadrevet ledelse/4_R/kopier_insite_data/insite_filer.RData")
+map(ind_filer_der_skal_opdateres$fuld_sti, file.remove)
+map(ind_filer_der_mangler$fuld_sti, kopier_filer_til_ind, "Z:/")
+map(mappe_ind_der_skal_opdateres$mappe, opdater_mapper)
