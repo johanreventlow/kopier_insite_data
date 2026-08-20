@@ -4,102 +4,16 @@ library(tictoc)
 library(furrr)
 library(lubridate)
 
+source("V:/BFH/BYH/Datadrevet ledelse/4_R/kopier_insite_data/kopier_insite_funktioner.R",
+       encoding = "UTF-8")
+
 # Setup parallel workers -----
 n_workers <- min(parallelly::availableCores() - 1, 8)
 plan(multisession, workers = n_workers)
 message(paste("Parallel workers:", n_workers))
 
-# Konstanter -----
-ÆMO_AFDELING <- "Geriatrisk og Palliativ Afdeling GP"
-
-# Funktioner -----
-
-# Vektoriseret afdelingsnavns-udtræk (genbrugt i flere funktioner)
-extract_afdeling <- function(tekst) {
-   str_trim(str_remove(str_extract(tekst, "(?!.* +- )(.*?)((?=, )|(?=\\.))"), "^-"))
-}
-
-# Vektoriserede sti-beregninger (rene funktioner, ingen side effects)
-beregn_ind_stier <- function(filstier, til_drev) {
-   filer <- path_file(filstier)
-   fra_stier <- as.character(path_dir(filstier))
-   til_mapper <- str_remove(fra_stier, fixed(str_replace_all(lokal_sti, "\\\\", "/")))
-   renset <- str_replace_all(til_mapper, "[[~!@#$%^&*{}\\+:<>?;=]]", "")
-   renset <- str_replace_all(str_squish(renset), "/ ", "/")
-   til_stier <- as.character(path(paste0(til_drev, renset)))
-   paste0(til_stier, "/", filer)
-}
-
-beregn_afd_stier <- function(filstier, til_drev) {
-   filer <- path_file(filstier)
-   paste0(til_drev, extract_afdeling(filer), "/", filer)
-}
-
-beregn_æmo_afd_stier <- function(filstier, til_drev) {
-   filer <- path_file(filstier)
-   paste0(til_drev, ÆMO_AFDELING, "/", filer)
-}
-
-beregn_afd_ind_stier <- function(filstier, til_drev) {
-   filer <- path_file(filstier)
-   mapper_ind <- str_sub(filer, 1L, str_locate(filer, " - ")[, 1] - 1)
-   paste0(til_drev, extract_afdeling(filstier), "/", mapper_ind, "/", filer)
-}
-
-beregn_æmo_afd_ind_stier <- function(filstier, til_drev) {
-   filer <- path_file(filstier)
-   mapper_ind <- str_sub(filer, 1L, str_locate(filer, " - ")[, 1] - 1)
-   paste0(til_drev, ÆMO_AFDELING, "/", mapper_ind, "/", filer)
-}
-
-opdater_mapper <- function(filsti) {
-   opdateres <- path(paste0(filsti, "_opdateres"))
-   file.rename(filsti, opdateres)
-   file.rename(opdateres, filsti)
-}
-
-scan_mappe <- function(scan_path, recurse = TRUE, type = "file", glob = "*.pdf") {
-   scannet <- fs::dir_info(path = scan_path, recurse = recurse, type = type, glob = glob)
-   afd_regex <- "(?!.* +- )(.*?)((?=, )|(?=\\.))"
-   if (type == "file") {
-      df <- dplyr::transmute(scannet,
-                      fuld_sti = fs::path_tidy(path),
-                      filnavn = fs::path_file(path),
-                      fil_sti = fs::path_dir(path),
-                      afdeling = stringr::str_trim(stringr::str_remove(
-                         stringr::str_extract(filnavn, afd_regex), "^-")),
-                      indikator = stringr::str_trim(stringr::str_extract(fs::path_file(path), "[^-]*")),
-                      modification_time = lubridate::as_datetime(as.character(modification_time)),
-                      change_time = lubridate::as_datetime(as.character(change_time)))
-   } else {
-      df <- dplyr::transmute(scannet,
-                      fuld_sti = fs::path_tidy(path),
-                      filnavn = fs::path_file(path),
-                      modification_time = lubridate::as_datetime(as.character(modification_time)),
-                      change_time = lubridate::as_datetime(as.character(change_time)))
-   }
-   return(df)
-}
-
-# Hjælpefunktion til mappe-hierarki beregning (genbrugt for Z:/ og W:/)
-beregn_mappe_hierarki <- function(df, drev_prefix) {
-   base <- df %>% mutate(mappe = str_replace(fil_sti, lokal_sti, drev_prefix))
-   bind_rows(
-      base,
-      base %>% mutate(mappe = dirname(mappe)),
-      base %>% mutate(mappe = dirname(mappe)) %>% mutate(mappe = dirname(mappe))
-   ) %>%
-      select(mappe) %>%
-      mutate(mappe = str_squish(mappe)) %>%
-      unique()
-}
-
-omdoeb_afd_navn_i_filer <- function(alle_filer, fra, til) {
-   filer_til_omdoeb <- alle_filer %>% fs::path_filter(glob = paste0("*", fra, "*"))
-   if (length(filer_til_omdoeb) > 0) {
-      file_move(filer_til_omdoeb, str_replace_all(filer_til_omdoeb, fra, til))
-   }
-}
+# Org-mapping (Supabase med lokal cache-fallback) -----
+org_mapping <- hent_org_mapping()
 
 # Vælg lokal mappe -----
 lokal_sti <- path_tidy(DescToolsAddIns::dir.choose(default = "C:/Users/jrev0004/OneDrive - Region Hovedstaden/ddl"))
@@ -121,10 +35,25 @@ fil_info_lokale  <- value(f_lokale)
 fil_info_ind     <- value(f_ind)
 fil_info_afd     <- value(f_afd)
 fil_info_afd_ind <- value(f_afd_ind)
+toc()
+
+# Afdeling udledes af filnavnet — håndterer både gammelt og nyt format
+fil_info_lokale <- fil_info_lokale %>%
+   mutate(afdeling = parse_afdeling(filnavn, org_mapping))
+
+ukendte_filnavne <- unique(fil_info_lokale$filnavn[is.na(fil_info_lokale$afdeling)])
+if (length(ukendte_filnavne) > 0) {
+   message("ADVARSEL: ", length(ukendte_filnavne),
+           " filnavne kunne ikke afdelings-parses — springes over på Y:/ og W:/ ",
+           "(kopieres stadig til Z:/):")
+   walk(head(ukendte_filnavne, 10), ~message("  - ", .x))
+   if (length(ukendte_filnavne) > 10) {
+      message("  ... og ", length(ukendte_filnavne) - 10, " flere")
+   }
+}
 
 # ÆMO er subset af lokale — ingen ekstra scan nødvendig
 fil_info_æmo <- fil_info_lokale %>% filter(str_detect(filnavn, "ÆMO"))
-toc()
 
 message(paste("Filer fundet — Lokal:", nrow(fil_info_lokale),
               "| Z:/:", nrow(fil_info_ind),
@@ -133,17 +62,18 @@ message(paste("Filer fundet — Lokal:", nrow(fil_info_lokale),
               "| ÆMO:", nrow(fil_info_æmo)))
 
 # Beregn filer der skal uploades -----
-# Indikatorer (Z:/)
+# Indikatorer (Z:/) — alle lokale filer, uanset filnavnsformat
 ind_filer_der_mangler <- fil_info_lokale %>%
    anti_join(fil_info_ind, by = c("filnavn", "modification_time", "change_time"))
 
 ind_filer_der_skal_opdateres <- fil_info_ind %>%
    semi_join(ind_filer_der_mangler, by = "filnavn")
 
-mappe_ind_der_skal_opdateres <- beregn_mappe_hierarki(ind_filer_der_mangler, "Z:")
+mappe_ind_der_skal_opdateres <- beregn_mappe_hierarki(ind_filer_der_mangler, "Z:", lokal_sti)
 
-# Afdeling (Y:/)
+# Afdeling (Y:/) — kun filer med kendt afdeling
 afd_filer_der_mangler <- fil_info_lokale %>%
+   filter(!is.na(afdeling)) %>%
    anti_join(fil_info_afd, by = c("filnavn", "modification_time", "change_time"))
 
 afd_filer_der_skal_opdateres <- fil_info_afd %>%
@@ -157,8 +87,9 @@ mappe_afd_der_skal_opdateres <- afd_filer_der_mangler %>%
    select(mappe, afdeling) %>%
    unique()
 
-# Afdeling/Indikator (W:/)
+# Afdeling/Indikator (W:/) — kun filer med kendt afdeling
 afd_ind_filer_der_mangler <- fil_info_lokale %>%
+   filter(!is.na(afdeling)) %>%
    anti_join(fil_info_afd_ind, by = c("filnavn", "modification_time", "change_time"))
 
 afd_ind_filer_der_skal_opdateres <- fil_info_afd_ind %>%
@@ -209,25 +140,31 @@ ind_targets <- afd_targets <- æmo_afd_targets <- afd_ind_targets <- æmo_afd_in
 
 if (nrow(ind_filer_der_mangler) > 0) {
    ind_targets <- ind_filer_der_mangler %>%
-      transmute(source = fuld_sti, target = beregn_ind_stier(fuld_sti, "Z:/"))
+      transmute(source = fuld_sti, target = beregn_ind_stier(fuld_sti, "Z:/", lokal_sti))
 }
 
 if (nrow(afd_filer_der_mangler) > 0) {
    afd_targets <- afd_filer_der_mangler %>%
-      transmute(source = fuld_sti, target = beregn_afd_stier(fuld_sti, "Y:/"))
+      transmute(source = fuld_sti, target = paste0("Y:/", afdeling, "/", filnavn))
 }
 
 if (nrow(fil_info_æmo) > 0) {
    æmo_afd_targets <- fil_info_æmo %>%
-      transmute(source = fuld_sti, target = beregn_æmo_afd_stier(fuld_sti, "Y:/"))
+      transmute(source = fuld_sti, target = paste0("Y:/", ÆMO_AFDELING, "/", filnavn))
 
    æmo_afd_ind_targets <- fil_info_æmo %>%
-      transmute(source = fuld_sti, target = beregn_æmo_afd_ind_stier(fuld_sti, "W:/"))
+      mutate(indikator_mappe = beregn_indikator_mappe(filnavn, fil_sti, lokal_sti)) %>%
+      filter(!is.na(indikator_mappe)) %>%
+      transmute(source = fuld_sti,
+                target = paste0("W:/", ÆMO_AFDELING, "/", indikator_mappe, "/", filnavn))
 }
 
 if (nrow(afd_ind_filer_der_mangler) > 0) {
    afd_ind_targets <- afd_ind_filer_der_mangler %>%
-      transmute(source = fuld_sti, target = beregn_afd_ind_stier(fuld_sti, "W:/"))
+      mutate(indikator_mappe = beregn_indikator_mappe(filnavn, fil_sti, lokal_sti)) %>%
+      filter(!is.na(indikator_mappe)) %>%
+      transmute(source = fuld_sti,
+                target = paste0("W:/", afdeling, "/", indikator_mappe, "/", filnavn))
 }
 
 all_copies <- bind_rows(ind_targets, afd_targets, æmo_afd_targets, afd_ind_targets, æmo_afd_ind_targets)
