@@ -8,7 +8,7 @@ source("V:/BFH/BYH/Datadrevet ledelse/4_R/kopier_insite_data/kopier_insite_funkt
        encoding = "UTF-8")
 
 # Setup parallel workers -----
-n_workers <- min(parallelly::availableCores() - 1, 8)
+n_workers <- min(parallelly::availableCores() - 1, 10)
 plan(multisession, workers = n_workers)
 message(paste("Parallel workers:", n_workers))
 
