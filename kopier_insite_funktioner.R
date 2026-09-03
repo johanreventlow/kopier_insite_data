@@ -228,13 +228,24 @@ beregn_indikator_mappe <- function(filnavne, fil_stier, lokal_sti) {
 
 # Sti-beregning og drev-operationer -----
 
+# SharePoint-drevene (WebDAV) fejler med ENAMETOOLONG når mappe + filnavn
+# overstiger Windows' grænse på 260 tegn. Lokalt (OneDrive/NTFS) går det godt,
+# så lange mappenavne fra den lokale struktur afkortes på netværksdrevene.
+# Bemærk: to mapper med samme første MAX_MAPPENAVN_LAENGDE tegn lander i én mappe.
+MAX_MAPPENAVN_LAENGDE <- 50
+
+#' Afkort hvert mappeniveau i en sti til maks `maks` tegn
+afkort_mappenavne <- function(stier, maks = MAX_MAPPENAVN_LAENGDE) {
+   str_replace_all(stier, "[^/]+", \(navn) str_remove(str_sub(navn, 1L, maks), "[\\s.]+$"))
+}
+
 # Z:-hierarkiet spejler den lokale mappestruktur (filnavnet bruges ikke)
 beregn_ind_stier <- function(filstier, til_drev, lokal_sti) {
    filer <- path_file(filstier)
    fra_stier <- as.character(path_dir(filstier))
    til_mapper <- str_remove(fra_stier, fixed(str_replace_all(lokal_sti, "\\\\", "/")))
    renset <- str_replace_all(til_mapper, "[[~!@#$%^&*{}\\+:<>?;=]]", "")
-   renset <- str_replace_all(str_squish(renset), "/ ", "/")
+   renset <- afkort_mappenavne(str_replace_all(str_squish(renset), "/ ", "/"))
    til_stier <- as.character(path(paste0(til_drev, renset)))
    paste0(til_stier, "/", filer)
 }
@@ -266,7 +277,7 @@ scan_mappe <- function(scan_path, recurse = TRUE, type = "file", glob = "*.pdf")
 
 # Hjælpefunktion til mappe-hierarki beregning (genbrugt for Z:/ og W:/)
 beregn_mappe_hierarki <- function(df, drev_prefix, lokal_sti) {
-   base <- df %>% mutate(mappe = str_replace(fil_sti, lokal_sti, drev_prefix))
+   base <- df %>% mutate(mappe = afkort_mappenavne(str_replace(fil_sti, lokal_sti, drev_prefix)))
    bind_rows(
       base,
       base %>% mutate(mappe = dirname(mappe)),

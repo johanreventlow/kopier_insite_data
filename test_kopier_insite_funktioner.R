@@ -15,6 +15,19 @@ suppressPackageStartupMessages({
 source("V:/BFH/BYH/Datadrevet ledelse/4_R/kopier_insite_data/kopier_insite_funktioner.R",
        encoding = "UTF-8")
 
+# --- Afkortning af lange mappenavne (SharePoint/WebDAV 260-tegns grænse) ---
+lang_mappe <- "Var du med til at træffe beslutninger om din undersøgelse_behandling i det omfang, du havde behov for_"
+stopifnot(identical(
+   afkort_mappenavne(paste0("/Tilfredshed/", lang_mappe, "/Kort.")),
+   "/Tilfredshed/Var du med til at træffe beslutninger om din under/Kort"
+))
+stopifnot(identical(
+   beregn_ind_stier(paste0("C:/x/ddl/2026-34/Tilfredshed/", lang_mappe, "/fil.pdf"),
+                    "Z:/", "C:/x/ddl/2026-34"),
+   "Z:/Tilfredshed/Var du med til at træffe beslutninger om din under/fil.pdf"
+))
+cat("OK: afkortning af mappenavne\n")
+
 org_mapping <- hent_org_mapping()
 
 # --- Gammelt format ---
