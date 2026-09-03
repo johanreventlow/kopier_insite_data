@@ -9,3 +9,6 @@
 
 # Arkiv (gamle versioner)
 arkiv/
+.httr-oauth
+.DS_Store
+.quarto
